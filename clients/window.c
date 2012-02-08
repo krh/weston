@@ -1079,11 +1079,6 @@ widget_set_size(struct widget *widget, int32_t width, int32_t height)
 
 	widget->allocation.width = width;
 	widget->allocation.height = height;
-
-	window->allocation.x = 0;
-	window->allocation.y = 0;
-	window->allocation.width = width;
-	window->allocation.height = height;
 }
 
 void
