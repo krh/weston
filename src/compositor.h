@@ -363,6 +363,14 @@ struct weston_region {
 	pixman_region32_t region;
 };
 
+struct weston_pointer_lock {
+	struct wl_pointer_grab grab;
+	struct wl_resource *resource;
+	struct weston_surface *surface;
+	struct wl_listener surface_destroy_listener;
+	wl_fixed_t sx, sy;
+};
+
 /* Using weston_surface transformations
  *
  * To add a transformation to a surface, create a struct weston_transform, and

@@ -1757,18 +1757,94 @@ notify_motion(struct weston_seat *seat,
 
 	weston_compositor_wake(ec);
 
-	move_pointer(seat, dx, dy);
+	if (!pointer->grab->relative) {
+		move_pointer(seat, dx, dy);
+	} else {
+		pointer->grab->x = dx;
+		pointer->grab->y = dy;
+	}
 
 	interface = pointer->grab->interface;
 	interface->motion(pointer->grab, time,
 			  pointer->grab->x, pointer->grab->y);
 }
 
+static void
+pointer_unmap_sprite(struct weston_seat *seat);
+
+static void
+pointer_lock_grab_focus(struct wl_pointer_grab *grab,
+			struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y)
+{
+	struct weston_pointer_lock *lock =
+		container_of(grab, struct weston_pointer_lock, grab);
+	struct weston_compositor *compositor = lock->surface->compositor;
+	struct wl_pointer *pointer = lock->grab.pointer;
+	struct weston_seat *seat =
+		(struct weston_seat *) pointer->seat;
+	uint32_t serial;
+
+	wl_pointer_set_focus(pointer, NULL, 0, 0);
+
+	weston_surface_from_global_fixed(lock->surface,
+					 pointer->x, pointer->y,
+					 &lock->sx, &lock->sy);
+
+	serial = wl_display_next_serial(compositor->wl_display);
+	wl_pointer_send_enter(lock->resource, serial,
+			      &lock->surface->surface.resource,
+			      lock->sx, lock->sy);
+	grab->focus = NULL;
+
+	if (seat->sprite)
+		pointer_unmap_sprite(seat);
+}
+
+static void
+pointer_lock_grab_motion(struct wl_pointer_grab *grab,
+			 uint32_t time, wl_fixed_t dx, wl_fixed_t dy)
+{
+	struct weston_pointer_lock *lock =
+		container_of(grab, struct weston_pointer_lock, grab);
+	struct wl_pointer *pointer = lock->grab.pointer;
+	wl_fixed_t sx, sy;
+
+	weston_surface_from_global_fixed(lock->surface,
+					 pointer->x + dx, pointer->y + dy,
+					 &sx, &sy);
+
+	wl_pointer_send_motion(lock->resource, time,
+			       sx - lock->sx, sy - lock->sy);
+}
+
+static void
+pointer_lock_grab_button(struct wl_pointer_grab *grab,
+			 uint32_t time, uint32_t button, uint32_t state)
+{
+	struct weston_pointer_lock *lock =
+		container_of(grab, struct weston_pointer_lock, grab);
+	struct weston_compositor *compositor = lock->surface->compositor;
+	uint32_t serial;
+
+	serial = wl_display_next_serial(compositor->wl_display);
+	wl_pointer_send_button(lock->resource, serial, time, button, state);
+}
+
+static const struct wl_pointer_grab_interface pointer_lock_grab_interface = {
+	pointer_lock_grab_focus,
+	pointer_lock_grab_motion,
+	pointer_lock_grab_button,
+};
+
+static struct weston_pointer_lock *
+get_pointer_lock(struct weston_surface *surface);
+
 WL_EXPORT void
 weston_surface_activate(struct weston_surface *surface,
 			struct weston_seat *seat)
 {
 	struct weston_compositor *compositor = seat->compositor;
+	struct weston_pointer_lock *lock;
 
 	if (seat->seat.keyboard) {
 		wl_keyboard_set_focus(seat->seat.keyboard, &surface->surface);
@@ -1776,6 +1852,17 @@ weston_surface_activate(struct weston_surface *surface,
 	}
 
 	wl_signal_emit(&compositor->activate_signal, surface);
+
+	if (seat->seat.pointer->grab->interface == &pointer_lock_grab_interface) {
+		seat->seat.pointer->grab->pointer = NULL;
+		wl_pointer_end_grab(seat->seat.pointer);
+	}
+
+	lock = get_pointer_lock(surface);
+	if (lock) {
+		wl_pointer_start_grab(seat->seat.pointer, &lock->grab);
+		lock->grab.relative = 1;
+	}
 }
 
 WL_EXPORT void
@@ -2401,10 +2488,110 @@ seat_get_touch(struct wl_client *client, struct wl_resource *resource,
 	cr->destroy = unbind_resource;
 }
 
+static void
+lock_set_cursor(struct wl_client *client, struct wl_resource *resource,
+		   uint32_t serial, struct wl_resource *surface_resource,
+		   int32_t x, int32_t y)
+{
+}
+
+static void
+lock_release(struct wl_client *client, struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static const struct wl_pointer_interface lock_interface = {
+	lock_set_cursor,
+	lock_release
+};
+
+static void
+pointer_lock_handle_surface_destroy(struct wl_listener *listener, void *data)
+{
+	struct weston_pointer_lock *lock =
+		container_of(listener, struct weston_pointer_lock,
+			     surface_destroy_listener);
+
+	lock->surface = NULL;
+	if (lock->grab.pointer) {
+		wl_pointer_end_grab(lock->grab.pointer);
+		lock->grab.pointer = NULL;
+	}
+}
+
+static void
+pointer_lock_handle_destroy(struct wl_resource *resource)
+{
+	struct weston_pointer_lock *lock = resource->data;
+
+	if (lock->grab.pointer)
+		wl_pointer_end_grab(lock->grab.pointer);
+	if (lock->surface)
+		wl_list_remove(&lock->surface_destroy_listener.link);
+	free(lock);
+}
+
+static struct weston_pointer_lock *
+get_pointer_lock(struct weston_surface *surface)
+{
+	struct wl_listener *listener;
+
+	if (surface == NULL)
+		return NULL;
+
+	listener = wl_signal_get(&surface->surface.resource.destroy_signal,
+				 pointer_lock_handle_surface_destroy);
+	if (listener)
+		return container_of(listener, struct weston_pointer_lock,
+				    surface_destroy_listener);
+	else
+		return NULL;
+}
+
+static void
+seat_lock_pointer(struct wl_client *client, struct wl_resource *resource,
+		  uint32_t id, struct wl_resource *surface_resource)
+{
+	struct weston_seat *seat = resource->data;
+	struct weston_pointer_lock *lock;
+
+	if (!seat->seat.pointer)
+		return;
+
+	lock = malloc(sizeof *lock);
+	if (lock == NULL) {
+		wl_resource_post_no_memory(resource);
+		return;
+	}
+
+	lock->resource = wl_client_add_object(client, &wl_pointer_interface,
+					      &lock_interface, id, lock);
+	lock->resource->destroy = pointer_lock_handle_destroy;
+
+	lock->grab.interface = &pointer_lock_grab_interface;
+	lock->grab.focus = NULL;
+	lock->grab.pointer = NULL;
+	lock->grab.relative = 1;
+
+	lock->surface = surface_resource->data;
+
+	lock->surface_destroy_listener.notify =
+		pointer_lock_handle_surface_destroy;
+	wl_signal_add(&lock->surface->surface.resource.destroy_signal,
+		      &lock->surface_destroy_listener);
+
+	if (seat->seat.keyboard->focus == &lock->surface->surface) {
+		wl_pointer_start_grab(seat->seat.pointer, &lock->grab);
+		lock->grab.relative = 1;
+	}
+}
+
 static const struct wl_seat_interface seat_interface = {
 	seat_get_pointer,
 	seat_get_keyboard,
 	seat_get_touch,
+	seat_lock_pointer,
 };
 
 static void
@@ -2425,6 +2612,8 @@ bind_seat(struct wl_client *client, void *data, uint32_t version, uint32_t id)
 		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
 	if (seat->touch)
 		caps |= WL_SEAT_CAPABILITY_TOUCH;
+	if (seat->pointer && version > 1)
+		caps |= WL_SEAT_CAPABILITY_POINTER_LOCK;
 
 	wl_seat_send_capabilities(resource, caps);
 }
