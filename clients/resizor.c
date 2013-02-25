@@ -47,6 +47,7 @@ struct resizor {
 	struct spring width;
 	struct spring height;
 	struct wl_callback *frame_callback;
+	struct wl_pointer *pointer_lock;
 };
 
 static void
@@ -213,14 +214,88 @@ show_menu(struct resizor *resizor, struct input *input, uint32_t time)
 			 x - 10, y - 10, menu_func, entries, 4);
 }
 
+
+static void
+pointer_handle_enter(void *data, struct wl_pointer *pointer,
+		     uint32_t serial, struct wl_surface *surface,
+		     wl_fixed_t sx_w, wl_fixed_t sy_w)
+{
+}
+
+static void
+pointer_handle_leave(void *data, struct wl_pointer *pointer,
+		     uint32_t serial, struct wl_surface *surface)
+{
+}
+
+static void
+pointer_handle_motion(void *data, struct wl_pointer *pointer,
+		      uint32_t time, wl_fixed_t sx_w, wl_fixed_t sy_w)
+{
+	struct resizor *resizor = data;
+
+	resizor->width.current += wl_fixed_to_double(sx_w);
+	resizor->width.previous = resizor->width.current;
+	resizor->width.target = resizor->width.current;
+
+	resizor->height.current += wl_fixed_to_double(sy_w);
+	resizor->height.previous = resizor->height.current;
+	resizor->height.target = resizor->height.current;
+
+	widget_schedule_resize(resizor->widget,
+			       resizor->width.current,
+			       resizor->height.current);
+}
+
+static void
+pointer_handle_button(void *data, struct wl_pointer *pointer, uint32_t serial,
+		      uint32_t time, uint32_t button, uint32_t state)
+{
+	struct resizor *resizor = data;
+
+	if (state != WL_POINTER_BUTTON_STATE_PRESSED)
+		return;
+
+	wl_pointer_release(resizor->pointer_lock);
+	resizor->pointer_lock = NULL;
+}
+
+static void
+pointer_handle_axis(void *data, struct wl_pointer *pointer,
+		    uint32_t time, uint32_t axis, wl_fixed_t value)
+{
+}
+
+static const struct wl_pointer_listener pointer_listener = {
+	pointer_handle_enter,
+	pointer_handle_leave,
+	pointer_handle_motion,
+	pointer_handle_button,
+	pointer_handle_axis,
+};
+
 static void
 button_handler(struct widget *widget,
 	       struct input *input, uint32_t time,
 	       uint32_t button, enum wl_pointer_button_state state, void *data)
 {
 	struct resizor *resizor = data;
+	struct wl_seat *seat;
+	struct wl_surface *surface;
 
 	switch (button) {
+	case BTN_LEFT:
+		if (state != WL_POINTER_BUTTON_STATE_PRESSED)
+			break;
+
+		input_ungrab(input);
+		seat = input_get_seat(input);
+		surface = window_get_wl_surface(resizor->window);
+		resizor->pointer_lock = wl_seat_lock_pointer(seat, surface);
+		wl_pointer_add_listener(resizor->pointer_lock,
+					&pointer_listener, resizor);
+		break;
+
 	case BTN_RIGHT:
 		if (state == WL_POINTER_BUTTON_STATE_PRESSED)
 			show_menu(resizor, input, time);
