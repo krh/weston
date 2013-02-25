@@ -2277,8 +2277,15 @@ pointer_set_cursor(struct wl_client *client, struct wl_resource *resource,
 								weston_surface_buffer_height(surface));
 }
 
+static void
+pointer_release(struct wl_client *client, struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
 static const struct wl_pointer_interface pointer_interface = {
-	pointer_set_cursor
+	pointer_set_cursor,
+	pointer_release
 };
 
 static void
@@ -2332,6 +2339,16 @@ seat_get_pointer(struct wl_client *client, struct wl_resource *resource,
 }
 
 static void
+keyboard_release(struct wl_client *client, struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static const struct wl_keyboard_interface keyboard_interface = {
+	keyboard_release
+};
+
+static void
 seat_get_keyboard(struct wl_client *client, struct wl_resource *resource,
 		  uint32_t id)
 {
@@ -2341,8 +2358,8 @@ seat_get_keyboard(struct wl_client *client, struct wl_resource *resource,
 	if (!seat->seat.keyboard)
 		return;
 
-        cr = wl_client_add_object(client, &wl_keyboard_interface, NULL, id,
-				  seat);
+        cr = wl_client_add_object(client, &wl_keyboard_interface,
+				  &keyboard_interface, id, seat);
 	wl_list_insert(&seat->seat.keyboard->resource_list, &cr->link);
 	cr->destroy = unbind_resource;
 
@@ -2359,6 +2376,16 @@ seat_get_keyboard(struct wl_client *client, struct wl_resource *resource,
 }
 
 static void
+touch_release(struct wl_client *client, struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static const struct wl_touch_interface touch_interface = {
+	touch_release
+};
+
+static void
 seat_get_touch(struct wl_client *client, struct wl_resource *resource,
 	       uint32_t id)
 {
@@ -2368,7 +2395,8 @@ seat_get_touch(struct wl_client *client, struct wl_resource *resource,
 	if (!seat->seat.touch)
 		return;
 
-        cr = wl_client_add_object(client, &wl_touch_interface, NULL, id, seat);
+        cr = wl_client_add_object(client, &wl_touch_interface,
+				  &touch_interface, id, seat);
 	wl_list_insert(&seat->seat.touch->resource_list, &cr->link);
 	cr->destroy = unbind_resource;
 }
